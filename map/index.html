@@ -169,7 +169,7 @@ function fetchData() {
 
         for(let p in planes) {
             if(!stillHere[p]) {
-                Map.removeLayer(planes[p].marker);
+                map.removeLayer(planes[p].marker);
                 delete planes[p];
             }
         }
@@ -185,7 +185,7 @@ function initialise() {
 	    maxZoom: 18,
 	    id: 'mapbox/streets-v11',
 	    accessToken: 'your.mapbox.access.token'
-	}).addTo(Map);
+	}).addTo(map);
 
     setInterval(() => {
         fetchData();
