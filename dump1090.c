@@ -54,6 +54,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <errno.h>
@@ -64,6 +65,7 @@
 #include <sys/time.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
+#include <sys/stat.h>
 #include <rtl-sdr.h>
 #include "anet.h"
 
@@ -1822,7 +1824,7 @@ struct aircraft *interactiveReceiveData(struct modesMessage *mm) {
             }
             /* If the two data is less than 10 seconds apart, compute
              * the position. */
-            if (abs(a->even_cprtime - a->odd_cprtime) <= 10000) {
+            if (llabs(a->even_cprtime - a->odd_cprtime) <= 10000) {
                 decodeCPR(a);
             }
         } else if (mm->metype == 19) {
