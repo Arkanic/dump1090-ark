@@ -116,6 +116,9 @@
 
 #define MODES_NOTUSED(V) ((void) V)
 
+#define METALTD 3.2828
+#define METSPEDM 1.852
+
 /* Structure used to describe a networking client. */
 struct client {
     int fd;         /* File descriptor. */
@@ -158,7 +161,7 @@ struct {
     int data_ready;                 /* Data ready to be processed. */
     uint32_t *icao_cache;           /* Recently seen ICAO addresses cache. */
     uint16_t *maglut;               /* I/Q -> Magnitude lookup table. */
-    int exit;                       /* Exit from the main loop when true. */
+    unsigned int exit : 1;          /* Exit from the main loop when true. */
 
     /* RTLSDR */
     int dev_index;
@@ -178,20 +181,20 @@ struct {
 
     /* Configuration */
     char *filename;                 /* Input form file, --ifile option. */
-    int loop;                       /* Read input file again and again. */
-    int fix_errors;                 /* Single bit error correction if true. */
-    int check_crc;                  /* Only display messages with good CRC. */
-    int raw;                        /* Raw output format. */
-    int debug;                      /* Debugging mode. */
-    int net;                        /* Enable networking. */
-    int net_only;                   /* Enable just networking. */
-    int interactive;                /* Interactive mode */
+    unsigned int loop : 1;          /* Read input file again and again. */
+    unsigned int fix_errors : 1;    /* Single bit error correction if true. */
+    unsigned int check_crc : 1;     /* Only display messages with good CRC. */
+    unsigned int raw : 1;           /* Raw output format. */
+    unsigned int debug : 1;         /* Debugging mode. */
+    unsigned int net : 1;           /* Enable networking. */
+    unsigned int net_only : 1;      /* Enable just networking. */
+    unsigned int interactive : 1;   /* Interactive mode */
     int interactive_rows;           /* Interactive mode: max number of rows. */
     int interactive_ttl;            /* Interactive mode: TTL before deletion. */
-    int stats;                      /* Print stats at exit in --ifile mode. */
-    int onlyaddr;                   /* Print only ICAO addresses. */
-    int metric;                     /* Use metric units. */
-    int aggressive;                 /* Aggressive detection algorithm. */
+    unsigned int stats : 1;         /* Print stats at exit in --ifile mode. */
+    unsigned int onlyaddr : 1;      /* Print only ICAO addresses. */
+    unsigned int metric : 1;        /* Use metric units. */
+    unsigned int aggressive : 1;    /* Aggressive detection algorithm. */
 
     /* Interactive mode */
     struct aircraft *aircrafts;
@@ -1851,7 +1854,7 @@ void interactiveShowData(void) {
     printf("\x1b[H\x1b[2J");    /* Clear the screen */
     printf(
 "Hex    Flight   Altitude  Speed   Lat       Lon       Track  Messages Seen %s\n"
-"--------------------------------------------------------------------------------\n",
+"==============================================================================\n",
         progress);
 
     while(a && count < Modes.interactive_rows) {
@@ -1859,8 +1862,8 @@ void interactiveShowData(void) {
 
         /* Convert units to metric if --metric was specified. */
         if (Modes.metric) {
-            altitude /= 3.2828;
-            speed *= 1.852;
+            altitude /= METALTD;
+            speed *= METSPEDM;
         }
 
         printf("%-6s %-8s %-9d %-7d %-7.03f   %-7.03f   %-3d   %-9ld %d sec\n",
