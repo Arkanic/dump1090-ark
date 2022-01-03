@@ -1852,7 +1852,7 @@ void interactiveShowData(void) {
     progress[3] = '\0';
 
     printf("\x1b[H\x1b[2J");    /* Clear the screen */
-    printf("VP: %llu", Modes.stat_valid_preamble);
+    printf("VP: %llu\n", Modes.stat_valid_preamble);
     printf(
 "Hex    Flight   Altitude  Speed   Lat       Lon       Track  Messages Seen %s\n"
 "==============================================================================\n",
