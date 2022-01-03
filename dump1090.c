@@ -201,16 +201,16 @@ struct {
     long long interactive_last_update;  /* Last screen update in milliseconds */
 
     /* Statistics */
-    long long stat_valid_preamble;
-    long long stat_demodulated;
-    long long stat_goodcrc;
-    long long stat_badcrc;
-    long long stat_fixed;
-    long long stat_single_bit_fix;
-    long long stat_two_bits_fix;
-    long long stat_http_requests;
-    long long stat_sbs_connections;
-    long long stat_out_of_phase;
+    unsigned long long stat_valid_preamble;
+    unsigned long long stat_demodulated;
+    unsigned long long stat_goodcrc;
+    unsigned long long stat_badcrc;
+    unsigned long long stat_fixed;
+    unsigned long long stat_single_bit_fix;
+    unsigned long long stat_two_bits_fix;
+    unsigned long long stat_http_requests;
+    unsigned long long stat_sbs_connections;
+    unsigned long long stat_out_of_phase;
 } Modes;
 
 /* The struct we use to store information about a decoded message. */
@@ -1852,6 +1852,7 @@ void interactiveShowData(void) {
     progress[3] = '\0';
 
     printf("\x1b[H\x1b[2J");    /* Clear the screen */
+    printf("VP: %llu", Modes.stat_valid_preamble);
     printf(
 "Hex    Flight   Altitude  Speed   Lat       Lon       Track  Messages Seen %s\n"
 "==============================================================================\n",
