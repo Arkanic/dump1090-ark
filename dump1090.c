@@ -192,6 +192,7 @@ struct {
     int interactive_rows;           /* Interactive mode: max number of rows. */
     int interactive_ttl;            /* Interactive mode: TTL before deletion. */
     unsigned int stats : 1;         /* Print stats at exit in --ifile mode. */
+    unsigned int istats : 1;
     unsigned int onlyaddr : 1;      /* Print only ICAO addresses. */
     unsigned int metric : 1;        /* Use metric units. */
     unsigned int aggressive : 1;    /* Aggressive detection algorithm. */
@@ -1852,7 +1853,6 @@ void interactiveShowData(void) {
     progress[3] = '\0';
 
     printf("\x1b[H\x1b[2J");    /* Clear the screen */
-    printf("VP: %llu\n", Modes.stat_valid_preamble);
     printf(
 "Hex    Flight   Altitude  Speed   Lat       Lon       Track  Messages Seen %s\n"
 "==============================================================================\n",
@@ -1873,6 +1873,34 @@ void interactiveShowData(void) {
             (int)(now - a->seen));
         a = a->next;
         count++;
+    }
+
+    /* interactive stats */
+    if(Modes.istats == 1) {
+        printf("==============================================================================\n");
+        /*
+        unsigned long long stat_valid_preamble;
+        unsigned long long stat_demodulated;
+        unsigned long long stat_goodcrc;
+        unsigned long long stat_badcrc;
+        unsigned long long stat_fixed;
+        unsigned long long stat_single_bit_fix;
+        unsigned long long stat_two_bits_fix;
+        unsigned long long stat_http_requests;
+        unsigned long long stat_sbs_connections;
+        unsigned long long stat_out_of_phase;
+        */
+        printf(
+            "valid_preamble: %10llu demodulated: %10llu\n"
+            "goodcrc: %10llu badcrc: %10llu\n"
+            "fixed: %10llu single_bit_fix: %10llu\n"
+            "two_bits_fix: %10llu http_requests: %10llu\n"
+            "sbs_connections: %10llu out_of_phase: %10llu\n",
+        Modes.stat_valid_preamble, Modes.stat_demodulated,
+        Modes.stat_goodcrc, Modes.stat_badcrc,
+        Modes.stat_fixed, Modes.stat_single_bit_fix,
+        Modes.stat_two_bits_fix, Modes.stat_http_requests,
+        Modes.stat_sbs_connections, Modes.stat_out_of_phase);
     }
 }
 
@@ -2485,6 +2513,7 @@ void showHelp(void) {
 "--no-crc-check           Disable messages with broken CRC (discouraged).\n"
 "--aggressive             More CPU for more messages (two bits fixes, ...).\n"
 "--stats                  With --ifile print stats at exit. No other output.\n"
+"--istats                 Show live stats in interactive mode.\n"
 "--onlyaddr               Show only ICAO addresses (testing purposes).\n"
 "--metric                 Use metric units (meters, km/h, ...).\n"
 "--snip <level>           Strip IQ file removing samples < level.\n"
@@ -2595,6 +2624,8 @@ int main(int argc, char **argv) {
             }
         } else if (!strcmp(argv[j],"--stats")) {
             Modes.stats = 1;
+        } else if(!strcmp(argv[j], "--istats")) {
+            Modes.istats = 1;
         } else if (!strcmp(argv[j],"--snip") && more) {
             snipMode(atoi(argv[++j]));
             exit(0);
