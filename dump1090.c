@@ -1891,11 +1891,11 @@ void interactiveShowData(void) {
         unsigned long long stat_out_of_phase;
         */
         printf(
-            "valid_preamble: %10llu  demodulated: %10llu\n"
-            "goodcrc: %10llu         badcrc: %10llu\n"
-            "fixed: %10llu           single_bit_fix: %10llu\n"
-            "two_bits_fix: %10llu    http_requests: %10llu\n"
-            "sbs_connections: %10llu out_of_phase: %10llu\n",
+            "valid_preamble:  %10llu demodulated:    %10llu\n"
+            "goodcrc:         %10llu badcrc:         %10llu\n"
+            "fixed:           %10llu single_bit_fix: %10llu\n"
+            "two_bits_fix:    %10llu http_requests:  %10llu\n"
+            "sbs_connections: %10llu out_of_phase:   %10llu\n",
         Modes.stat_valid_preamble, Modes.stat_demodulated,
         Modes.stat_goodcrc, Modes.stat_badcrc,
         Modes.stat_fixed, Modes.stat_single_bit_fix,
