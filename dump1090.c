@@ -66,8 +66,6 @@
 #include <sys/ioctl.h>
 #include <sys/select.h>
 #include <sys/stat.h>
-#include <rtl-sdr.h>
-#include "anet.h"
 
 #define MODES_DEFAULT_RATE         2000000
 #define MODES_DEFAULT_FREQ         1090000000
@@ -102,30 +100,10 @@
  * at least greater than a given level for us to dump the signal. */
 #define MODES_DEBUG_NOPREAMBLE_LEVEL 25
 
-#define MODES_INTERACTIVE_REFRESH_TIME 250      /* Milliseconds */
-#define MODES_INTERACTIVE_ROWS 15               /* Rows on screen */
-#define MODES_INTERACTIVE_TTL 60                /* TTL before being removed */
-
-#define MODES_NET_MAX_FD 1024
-#define MODES_NET_OUTPUT_SBS_PORT 30003
-#define MODES_NET_OUTPUT_RAW_PORT 30002
-#define MODES_NET_INPUT_RAW_PORT 30001
-#define MODES_NET_HTTP_PORT 8080
-#define MODES_CLIENT_BUF_SIZE 1024
-#define MODES_NET_SNDBUF_SIZE (1024*64)
-
 #define MODES_NOTUSED(V) ((void) V)
 
 #define METALTD 3.2828
 #define METSPEDM 1.852
-
-/* Structure used to describe a networking client. */
-struct client {
-    int fd;         /* File descriptor. */
-    int service;    /* TCP port the client is connected to. */
-    char buf[MODES_CLIENT_BUF_SIZE+1];    /* Read buffer. */
-    int buflen;                         /* Amount of data on buffer. */
-};
 
 /* Structure used to describe an aircraft in iteractive mode. */
 struct aircraft {
@@ -167,30 +145,12 @@ struct {
     int dev_index;
     int gain;
     int enable_agc;
-    rtlsdr_dev_t *dev;
     int freq;
 
-    /* Networking */
-    char aneterr[ANET_ERR_LEN];
-    struct client *clients[MODES_NET_MAX_FD]; /* Our clients. */
-    int maxfd;                      /* Greatest fd currently active. */
-    int sbsos;                      /* SBS output listening socket. */
-    int ros;                        /* Raw output listening socket. */
-    int ris;                        /* Raw input listening socket. */
-    int https;                      /* HTTP listening socket. */
-
-    /* Configuration */
-    char *filename;                 /* Input form file, --ifile option. */
-    unsigned int loop : 1;          /* Read input file again and again. */
     unsigned int fix_errors : 1;    /* Single bit error correction if true. */
     unsigned int check_crc : 1;     /* Only display messages with good CRC. */
     unsigned int raw : 1;           /* Raw output format. */
     unsigned int debug : 1;         /* Debugging mode. */
-    unsigned int net : 1;           /* Enable networking. */
-    unsigned int net_only : 1;      /* Enable just networking. */
-    unsigned int interactive : 1;   /* Interactive mode */
-    int interactive_rows;           /* Interactive mode: max number of rows. */
-    int interactive_ttl;            /* Interactive mode: TTL before deletion. */
     unsigned int stats : 1;         /* Print stats at exit in --ifile mode. */
     unsigned int istats : 1;
     unsigned int onlyaddr : 1;      /* Print only ICAO addresses. */
@@ -199,7 +159,6 @@ struct {
 
     /* Interactive mode */
     struct aircraft *aircrafts;
-    long long interactive_last_update;  /* Last screen update in milliseconds */
 
     /* Statistics */
     unsigned long long stat_valid_preamble;
@@ -209,7 +168,6 @@ struct {
     unsigned long long stat_fixed;
     unsigned long long stat_single_bit_fix;
     unsigned long long stat_two_bits_fix;
-    unsigned long long stat_http_requests;
     unsigned long long stat_sbs_connections;
     unsigned long long stat_out_of_phase;
 } Modes;
@@ -259,16 +217,10 @@ struct modesMessage {
     int altitude, unit;
 };
 
-void interactiveShowData(void);
-struct aircraft* interactiveReceiveData(struct modesMessage *mm);
-void modesSendRawOutput(struct modesMessage *mm);
-void modesSendSBSOutput(struct modesMessage *mm, struct aircraft *a);
 void useModesMessage(struct modesMessage *mm);
 int fixSingleBitErrors(unsigned char *msg, int bits);
 int fixTwoBitsErrors(unsigned char *msg, int bits);
 int modesMessageLenByType(int type);
-void sigWinchCallback();
-int getTermRows();
 
 /* ============================= Utility functions ========================== */
 
@@ -289,20 +241,12 @@ void modesInitConfig(void) {
     Modes.dev_index = 0;
     Modes.enable_agc = 0;
     Modes.freq = MODES_DEFAULT_FREQ;
-    Modes.filename = NULL;
     Modes.fix_errors = 1;
     Modes.check_crc = 1;
     Modes.raw = 0;
-    Modes.net = 0;
-    Modes.net_only = 0;
     Modes.onlyaddr = 0;
     Modes.debug = 0;
-    Modes.interactive = 0;
-    Modes.interactive_rows = MODES_INTERACTIVE_ROWS;
-    Modes.interactive_ttl = MODES_INTERACTIVE_TTL;
     Modes.aggressive = 0;
-    Modes.interactive_rows = getTermRows();
-    Modes.loop = 0;
 }
 
 void modesInit(void) {
@@ -322,7 +266,6 @@ void modesInit(void) {
     Modes.icao_cache = malloc(sizeof(uint32_t)*MODES_ICAO_CACHE_LEN*2);
     memset(Modes.icao_cache,0,sizeof(uint32_t)*MODES_ICAO_CACHE_LEN*2);
     Modes.aircrafts = NULL;
-    Modes.interactive_last_update = 0;
     if ((Modes.data = malloc(Modes.data_len)) == NULL ||
         (Modes.magnitude = malloc(Modes.data_len*2)) == NULL) {
         fprintf(stderr, "Out of memory allocating data buffer.\n");
@@ -352,7 +295,6 @@ void modesInit(void) {
     Modes.stat_fixed = 0;
     Modes.stat_single_bit_fix = 0;
     Modes.stat_two_bits_fix = 0;
-    Modes.stat_http_requests = 0;
     Modes.stat_sbs_connections = 0;
     Modes.stat_out_of_phase = 0;
     Modes.exit = 0;
@@ -360,8 +302,10 @@ void modesInit(void) {
 
 /* =============================== RTLSDR handling ========================== */
 
+
+// MAKE INIT FUNCTION (OR PASS DIRECTLY?)
 void modesInitRTLSDR(void) {
-    int j;
+    /*int j;
     int device_count;
     int ppm_error = 0;
     char vendor[256], product[256], serial[256];
@@ -383,15 +327,15 @@ void modesInitRTLSDR(void) {
         fprintf(stderr, "Error opening the RTLSDR device: %s\n",
             strerror(errno));
         exit(1);
-    }
+    }*/
 
     /* Set gain, frequency, sample rate, and reset the device. */
-    rtlsdr_set_tuner_gain_mode(Modes.dev,
+    /*rtlsdr_set_tuner_gain_mode(Modes.dev,
         (Modes.gain == MODES_AUTO_GAIN) ? 0 : 1);
     if (Modes.gain != MODES_AUTO_GAIN) {
-        if (Modes.gain == MODES_MAX_GAIN) {
+        if (Modes.gain == MODES_MAX_GAIN) {*/
             /* Find the maximum gain available. */
-            int numgains;
+            /*int numgains;
             int gains[100];
 
             numgains = rtlsdr_get_tuner_gains(Modes.dev, gains);
@@ -409,7 +353,7 @@ void modesInitRTLSDR(void) {
     rtlsdr_set_sample_rate(Modes.dev, MODES_DEFAULT_RATE);
     rtlsdr_reset_buffer(Modes.dev);
     fprintf(stderr, "Gain reported by device: %.2f\n",
-        rtlsdr_get_tuner_gain(Modes.dev)/10.0);
+        rtlsdr_get_tuner_gain(Modes.dev)/10.0);*/
 }
 
 /* We use a thread reading data in background, while the main thread
@@ -434,74 +378,16 @@ void rtlsdrCallback(unsigned char *buf, uint32_t len, void *ctx) {
     pthread_mutex_unlock(&Modes.data_mutex);
 }
 
-/* This is used when --ifile is specified in order to read data from file
- * instead of using an RTLSDR device. */
-void readDataFromFile(void) {
-    pthread_mutex_lock(&Modes.data_mutex);
-    while(1) {
-        ssize_t nread, toread;
-        unsigned char *p;
-
-        if (Modes.data_ready) {
-            pthread_cond_wait(&Modes.data_cond,&Modes.data_mutex);
-            continue;
-        }
-
-        if (Modes.interactive) {
-            /* When --ifile and --interactive are used together, slow down
-             * playing at the natural rate of the RTLSDR received. */
-            pthread_mutex_unlock(&Modes.data_mutex);
-            usleep(5000);
-            pthread_mutex_lock(&Modes.data_mutex);
-        }
-
-        /* Move the last part of the previous buffer, that was not processed,
-         * on the start of the new buffer. */
-        memcpy(Modes.data, Modes.data+MODES_DATA_LEN, (MODES_FULL_LEN-1)*4);
-        toread = MODES_DATA_LEN;
-        p = Modes.data+(MODES_FULL_LEN-1)*4;
-        while(toread) {
-            nread = read(Modes.fd, p, toread);
-            /* In --file mode, seek the file again from the start
-             * and re-play it if --loop was given. */
-            if (nread == 0 &&
-                Modes.filename != NULL &&
-                Modes.fd != STDIN_FILENO &&
-                Modes.loop)
-            {
-                if (lseek(Modes.fd,0,SEEK_SET) != -1) continue;
-            }
-
-            if (nread <= 0) {
-                Modes.exit = 1; /* Signal the other thread to exit. */
-                break;
-            }
-            p += nread;
-            toread -= nread;
-        }
-        if (toread) {
-            /* Not enough data on file to fill the buffer? Pad with
-             * no signal. */
-            memset(p,127,toread);
-        }
-        Modes.data_ready = 1;
-        /* Signal to the other thread that new data is ready */
-        pthread_cond_signal(&Modes.data_cond);
-    }
-}
-
 /* We read data using a thread, so the main thread only handles decoding
  * without caring about data acquisition. */
 void *readerThreadEntryPoint(void *arg) {
     MODES_NOTUSED(arg);
 
-    if (Modes.filename == NULL) {
+    
         rtlsdr_read_async(Modes.dev, rtlsdrCallback, NULL,
                               MODES_ASYNC_BUF_NUMBER,
                               MODES_DATA_LEN);
-    } else {
-        readDataFromFile();
-    }
+
     return NULL;
 }
 
@@ -1588,21 +1474,7 @@ good_preamble:
  * further processing and visualization. */
 void useModesMessage(struct modesMessage *mm) {
     if (!Modes.stats && (Modes.check_crc == 0 || mm->crcok)) {
-        /* Track aircrafts in interactive mode or if the HTTP
-         * interface is enabled. */
-        if (Modes.interactive || Modes.stat_http_requests > 0 || Modes.stat_sbs_connections > 0) {
-            struct aircraft *a = interactiveReceiveData(mm);
-            if (a && Modes.stat_sbs_connections > 0) modesSendSBSOutput(mm, a);  /* Feed SBS output clients. */
-        }
-        /* In non-interactive way, display messages on standard output. */
-        if (!Modes.interactive) {
-            displayModesMessage(mm);
-            if (!Modes.raw && !Modes.onlyaddr) printf("\n");
-        }
-        /* Send data to connected clients. */
-        if (Modes.net) {
-            modesSendRawOutput(mm);  /* Feed raw output clients. */
-        }
+        // USE MM!!!! (send to callback)
     }
 }
 
@@ -1841,94 +1713,6 @@ struct aircraft *interactiveReceiveData(struct modesMessage *mm) {
     return a;
 }
 
-/* Show the currently captured interactive data on screen. */
-void interactiveShowData(void) {
-    struct aircraft *a = Modes.aircrafts;
-    time_t now = time(NULL);
-    char progress[4];
-    int count = 0;
-
-    memset(progress,' ',3);
-    progress[time(NULL)%3] = '.';
-    progress[3] = '\0';
-
-    printf("\x1b[H\x1b[2J");    /* Clear the screen */
-    printf(
-"Hex    Flight   Altitude  Speed   Lat       Lon       Track  Messages Seen %s\n"
-"==============================================================================\n",
-        progress);
-
-    while(a && count < Modes.interactive_rows) {
-        int altitude = a->altitude, speed = a->speed;
-
-        /* Convert units to metric if --metric was specified. */
-        if (Modes.metric) {
-            altitude /= METALTD;
-            speed *= METSPEDM;
-        }
-
-        printf("%-6s %-8s %-9d %-7d %-7.03f   %-7.03f   %-3d   %-9ld %d sec   \n",
-            a->hexaddr, a->flight, altitude, speed,
-            a->lat, a->lon, a->track, a->messages,
-            (int)(now - a->seen));
-        a = a->next;
-        count++;
-    }
-
-    /* interactive stats */
-    if(Modes.istats == 1) {
-        printf("==============================================================================\n");
-        /*
-        unsigned long long stat_valid_preamble;
-        unsigned long long stat_demodulated;
-        unsigned long long stat_goodcrc;
-        unsigned long long stat_badcrc;
-        unsigned long long stat_fixed;
-        unsigned long long stat_single_bit_fix;
-        unsigned long long stat_two_bits_fix;
-        unsigned long long stat_http_requests;
-        unsigned long long stat_sbs_connections;
-        unsigned long long stat_out_of_phase;
-        */
-        printf(
-            "valid_preamble:  %10llu demodulated:    %10llu\n"
-            "goodcrc:         %10llu badcrc:         %10llu\n"
-            "fixed:           %10llu single_bit_fix: %10llu\n"
-            "two_bits_fix:    %10llu http_requests:  %10llu\n"
-            "sbs_connections: %10llu out_of_phase:   %10llu\n",
-        Modes.stat_valid_preamble, Modes.stat_demodulated,
-        Modes.stat_goodcrc, Modes.stat_badcrc,
-        Modes.stat_fixed, Modes.stat_single_bit_fix,
-        Modes.stat_two_bits_fix, Modes.stat_http_requests,
-        Modes.stat_sbs_connections, Modes.stat_out_of_phase);
-    }
-}
-
-/* When in interactive mode If we don't receive new nessages within
- * MODES_INTERACTIVE_TTL seconds we remove the aircraft from the list. */
-void interactiveRemoveStaleAircrafts(void) {
-    struct aircraft *a = Modes.aircrafts;
-    struct aircraft *prev = NULL;
-    time_t now = time(NULL);
-
-    while(a) {
-        if ((now - a->seen) > Modes.interactive_ttl) {
-            struct aircraft *next = a->next;
-            /* Remove the element from the linked list, with care
-             * if we are removing the first element. */
-            free(a);
-            if (!prev)
-                Modes.aircrafts = next;
-            else
-                prev->next = next;
-            a = next;
-        } else {
-            prev = a;
-            a = a->next;
-        }
-    }
-}
-
 /* ============================== Snip mode ================================= */
 
 /* Get raw IQ samples and filter everything is < than the specified level
@@ -1949,210 +1733,6 @@ void snipMode(int level) {
     }
 }
 
-/* ============================= Networking =================================
- * Note: here we risregard any kind of good coding practice in favor of
- * extreme simplicity, that is:
- *
- * 1) We only rely on the kernel buffers for our I/O without any kind of
- *    user space buffering.
- * 2) We don't register any kind of event handler, from time to time a
- *    function gets called and we accept new connections. All the rest is
- *    handled via non-blocking I/O and manually pulling clients to see if
- *    they have something new to share with us when reading is needed.
- */
-
-#define MODES_NET_SERVICE_RAWO 0
-#define MODES_NET_SERVICE_RAWI 1
-#define MODES_NET_SERVICE_HTTP 2
-#define MODES_NET_SERVICE_SBS 3
-#define MODES_NET_SERVICES_NUM 4
-struct {
-    char *descr;
-    int *socket;
-    int port;
-} modesNetServices[MODES_NET_SERVICES_NUM] = {
-    {"Raw TCP output", &Modes.ros, MODES_NET_OUTPUT_RAW_PORT},
-    {"Raw TCP input", &Modes.ris, MODES_NET_INPUT_RAW_PORT},
-    {"HTTP server", &Modes.https, MODES_NET_HTTP_PORT},
-    {"Basestation TCP output", &Modes.sbsos, MODES_NET_OUTPUT_SBS_PORT}
-};
-
-/* Networking "stack" initialization. */
-void modesInitNet(void) {
-    int j;
-
-    memset(Modes.clients,0,sizeof(Modes.clients));
-    Modes.maxfd = -1;
-
-    for (j = 0; j < MODES_NET_SERVICES_NUM; j++) {
-        int s = anetTcpServer(Modes.aneterr, modesNetServices[j].port, NULL);
-        if (s == -1) {
-            fprintf(stderr, "Error opening the listening port %d (%s): %s\n",
-                modesNetServices[j].port,
-                modesNetServices[j].descr,
-                strerror(errno));
-            exit(1);
-        }
-        anetNonBlock(Modes.aneterr, s);
-        *modesNetServices[j].socket = s;
-    }
-
-    signal(SIGPIPE, SIG_IGN);
-}
-
-/* This function gets called from time to time when the decoding thread is
- * awakened by new data arriving. This usually happens a few times every
- * second. */
-void modesAcceptClients(void) {
-    int fd, port;
-    unsigned int j;
-    struct client *c;
-
-    for (j = 0; j < MODES_NET_SERVICES_NUM; j++) {
-        fd = anetTcpAccept(Modes.aneterr, *modesNetServices[j].socket,
-                           NULL, &port);
-        if (fd == -1) {
-            if (Modes.debug & MODES_DEBUG_NET && errno != EAGAIN)
-                printf("Accept %d: %s\n", *modesNetServices[j].socket,
-                       strerror(errno));
-            continue;
-        }
-
-        if (fd >= MODES_NET_MAX_FD) {
-            close(fd);
-            return; /* Max number of clients reached. */
-        }
-
-        anetNonBlock(Modes.aneterr, fd);
-        c = malloc(sizeof(*c));
-        c->service = *modesNetServices[j].socket;
-        c->fd = fd;
-        c->buflen = 0;
-        Modes.clients[fd] = c;
-        anetSetSendBuffer(Modes.aneterr,fd,MODES_NET_SNDBUF_SIZE);
-
-        if (Modes.maxfd < fd) Modes.maxfd = fd;
-        if (*modesNetServices[j].socket == Modes.sbsos)
-            Modes.stat_sbs_connections++;
-
-        j--; /* Try again with the same listening port. */
-
-        if (Modes.debug & MODES_DEBUG_NET)
-            printf("Created new client %d\n", fd);
-    }
-}
-
-/* On error free the client, collect the structure, adjust maxfd if needed. */
-void modesFreeClient(int fd) {
-    close(fd);
-    free(Modes.clients[fd]);
-    Modes.clients[fd] = NULL;
-
-    if (Modes.debug & MODES_DEBUG_NET)
-        printf("Closing client %d\n", fd);
-
-    /* If this was our maxfd, scan the clients array to find the new max.
-     * Note that we are sure there is no active fd greater than the closed
-     * fd, so we scan from fd-1 to 0. */
-    if (Modes.maxfd == fd) {
-        int j;
-
-        Modes.maxfd = -1;
-        for (j = fd-1; j >= 0; j--) {
-            if (Modes.clients[j]) {
-                Modes.maxfd = j;
-                break;
-            }
-        }
-    }
-}
-
-/* Send the specified message to all clients listening for a given service. */
-void modesSendAllClients(int service, void *msg, int len) {
-    int j;
-    struct client *c;
-
-    for (j = 0; j <= Modes.maxfd; j++) {
-        c = Modes.clients[j];
-        if (c && c->service == service) {
-            int nwritten = write(j, msg, len);
-            if (nwritten != len) {
-                modesFreeClient(j);
-            }
-        }
-    }
-}
-
-/* Write raw output to TCP clients. */
-void modesSendRawOutput(struct modesMessage *mm) {
-    char msg[128], *p = msg;
-    int j;
-
-    *p++ = '*';
-    for (j = 0; j < mm->msgbits/8; j++) {
-        sprintf(p, "%02X", mm->msg[j]);
-        p += 2;
-    }
-    *p++ = ';';
-    *p++ = '\n';
-    modesSendAllClients(Modes.ros, msg, p-msg);
-}
-
-
-/* Write SBS output to TCP clients. */
-void modesSendSBSOutput(struct modesMessage *mm, struct aircraft *a) {
-    char msg[256], *p = msg;
-    int emergency = 0, ground = 0, alert = 0, spi = 0;
-
-    if (mm->msgtype == 4 || mm->msgtype == 5 || mm->msgtype == 21) {
-        /* Node: identity is calculated/kept in base10 but is actually
-         * octal (07500 is represented as 7500) */
-        if (mm->identity == 7500 || mm->identity == 7600 ||
-            mm->identity == 7700) emergency = -1;
-        if (mm->fs == 1 || mm->fs == 3) ground = -1;
-        if (mm->fs == 2 || mm->fs == 3 || mm->fs == 4) alert = -1;
-        if (mm->fs == 4 || mm->fs == 5) spi = -1;
-    }
-
-    if (mm->msgtype == 0) {
-        p += sprintf(p, "MSG,5,,,%02X%02X%02X,,,,,,,%d,,,,,,,,,,",
-        mm->aa1, mm->aa2, mm->aa3, mm->altitude);
-    } else if (mm->msgtype == 4) {
-        p += sprintf(p, "MSG,5,,,%02X%02X%02X,,,,,,,%d,,,,,,,%d,%d,%d,%d",
-        mm->aa1, mm->aa2, mm->aa3, mm->altitude, alert, emergency, spi, ground);
-    } else if (mm->msgtype == 5) {
-        p += sprintf(p, "MSG,6,,,%02X%02X%02X,,,,,,,,,,,,,%d,%d,%d,%d,%d",
-        mm->aa1, mm->aa2, mm->aa3, mm->identity, alert, emergency, spi, ground);
-    } else if (mm->msgtype == 11) {
-        p += sprintf(p, "MSG,8,,,%02X%02X%02X,,,,,,,,,,,,,,,,,",
-        mm->aa1, mm->aa2, mm->aa3);
-    } else if (mm->msgtype == 17 && mm->metype == 4) {
-        p += sprintf(p, "MSG,1,,,%02X%02X%02X,,,,,,%s,,,,,,,,0,0,0,0",
-        mm->aa1, mm->aa2, mm->aa3, mm->flight);
-    } else if (mm->msgtype == 17 && mm->metype >= 9 && mm->metype <= 18) {
-        if (a->lat == 0 && a->lon == 0)
-            p += sprintf(p, "MSG,3,,,%02X%02X%02X,,,,,,,%d,,,,,,,0,0,0,0",
-            mm->aa1, mm->aa2, mm->aa3, mm->altitude);
-        else
-            p += sprintf(p, "MSG,3,,,%02X%02X%02X,,,,,,,%d,,,%1.5f,%1.5f,,,"
-                            "0,0,0,0",
-            mm->aa1, mm->aa2, mm->aa3, mm->altitude, a->lat, a->lon);
-    } else if (mm->msgtype == 17 && mm->metype == 19 && mm->mesub == 1) {
-        int vr = (mm->vert_rate_sign==0?1:-1) * (mm->vert_rate-1) * 64;
-
-        p += sprintf(p, "MSG,4,,,%02X%02X%02X,,,,,,,,%d,%d,,,%i,,0,0,0,0",
-        mm->aa1, mm->aa2, mm->aa3, a->speed, a->track, vr);
-    } else if (mm->msgtype == 21) {
-        p += sprintf(p, "MSG,6,,,%02X%02X%02X,,,,,,,,,,,,,%d,%d,%d,%d,%d",
-        mm->aa1, mm->aa2, mm->aa3, mm->identity, alert, emergency, spi, ground);
-    } else {
-        return;
-    }
-
-    *p++ = '\n';
-    modesSendAllClients(Modes.sbsos, msg, p-msg);
-}
-
 /* Turn an hex digit into its 4 bit decimal value.
  * Returns -1 if the digit is not in the 0-F range. */
 int hexDigitVal(int c) {
@@ -2160,51 +1740,6 @@ int hexDigitVal(int c) {
     if (c >= '0' && c <= '9') return c-'0';
     else if (c >= 'a' && c <= 'f') return c-'a'+10;
     else return -1;
-}
-
-/* This function decodes a string representing a Mode S message in
- * raw hex format like: *8D4B969699155600E87406F5B69F;
- * The string is supposed to be at the start of the client buffer
- * and null-terminated.
- * 
- * The message is passed to the higher level layers, so it feeds
- * the selected screen output, the network output and so forth.
- * 
- * If the message looks invalid is silently discarded.
- *
- * The function always returns 0 (success) to the caller as there is
- * no case where we want broken messages here to close the client
- * connection. */
-int decodeHexMessage(struct client *c) {
-    char *hex = c->buf;
-    int l = strlen(hex), j;
-    unsigned char msg[MODES_LONG_MSG_BYTES];
-    struct modesMessage mm;
-
-    /* Remove spaces on the left and on the right. */
-    while(l && isspace(hex[l-1])) {
-        hex[l-1] = '\0';
-        l--;
-    }
-    while(isspace(*hex)) {
-        hex++;
-        l--;
-    }
-
-    /* Turn the message into binary. */
-    if (l < 2 || hex[0] != '*' || hex[l-1] != ';') return 0;
-    hex++; l-=2; /* Skip * and ; */
-    if (l > MODES_LONG_MSG_BYTES*2) return 0; /* Too long message... broken. */
-    for (j = 0; j < l; j += 2) {
-        int high = hexDigitVal(hex[j]);
-        int low = hexDigitVal(hex[j+1]);
-
-        if (high == -1 || low == -1) return 0;
-        msg[j/2] = (high<<4) | low;
-    }
-    decodeModesMessage(&mm,msg);
-    useModesMessage(&mm);
-    return 0;
 }
 
 /* Return a description of planes in json. */
@@ -2256,239 +1791,6 @@ char *aircraftsToJson(int *len) {
     return buf;
 }
 
-#define MODES_CONTENT_TYPE_HTML "text/html;charset=utf-8"
-#define MODES_CONTENT_TYPE_JSON "application/json;charset=utf-8"
-
-/* Get an HTTP request header and write the response to the client.
- * Again here we assume that the socket buffer is enough without doing
- * any kind of userspace buffering.
- *
- * Returns 1 on error to signal the caller the client connection should
- * be closed. */
-int handleHTTPRequest(struct client *c) {
-    char hdr[512];
-    int clen, hdrlen;
-    int httpver, keepalive;
-    char *p, *url, *content;
-    char *ctype;
-
-    if (Modes.debug & MODES_DEBUG_NET)
-        printf("\nHTTP request: %s\n", c->buf);
-
-    /* Minimally parse the request. */
-    httpver = (strstr(c->buf, "HTTP/1.1") != NULL) ? 11 : 10;
-    if (httpver == 10) {
-        /* HTTP 1.0 defaults to close, unless otherwise specified. */
-        keepalive = strstr(c->buf, "Connection: keep-alive") != NULL;
-    } else if (httpver == 11) {
-        /* HTTP 1.1 defaults to keep-alive, unless close is specified. */
-        keepalive = strstr(c->buf, "Connection: close") == NULL;
-    }
-
-    /* Identify he URL. */
-    p = strchr(c->buf,' ');
-    if (!p) return 1; /* There should be the method and a space... */
-    url = ++p; /* Now this should point to the requested URL. */
-    p = strchr(p, ' ');
-    if (!p) return 1; /* There should be a space before HTTP/... */
-    *p = '\0';
-
-    if (Modes.debug & MODES_DEBUG_NET) {
-        printf("\nHTTP keep alive: %d\n", keepalive);
-        printf("HTTP requested URL: %s\n\n", url);
-    }
-
-    /* Select the content to send, we have just two so far:
-     * "/" -> Our google map application.
-     * "/data.json" -> Our ajax request to update planes. */
-    if (strstr(url, "/data.json")) {
-        content = aircraftsToJson(&clen);
-        ctype = MODES_CONTENT_TYPE_JSON;
-    } else {
-        struct stat sbuf;
-        int fd = -1;
-
-        if (stat("./map/index.html",&sbuf) != -1 &&
-            (fd = open("./map/index.html",O_RDONLY)) != -1)
-        {
-            content = malloc(sbuf.st_size);
-            if (read(fd,content,sbuf.st_size) == -1) {
-                snprintf(content,sbuf.st_size,"Error reading from file: %s",
-                    strerror(errno));
-            }
-            clen = sbuf.st_size;
-        } else {
-            char buf[128];
-
-            clen = snprintf(buf,sizeof(buf),"Error opening HTML file: %s",
-                strerror(errno));
-            content = strdup(buf);
-        }
-        if (fd != -1) close(fd);
-        ctype = MODES_CONTENT_TYPE_HTML;
-    }
-
-    /* Create the header and send the reply. */
-    hdrlen = snprintf(hdr, sizeof(hdr),
-        "HTTP/1.1 200 OK\r\n"
-        "Server: Dump1090\r\n"
-        "Content-Type: %s\r\n"
-        "Connection: %s\r\n"
-        "Content-Length: %d\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "\r\n",
-        ctype,
-        keepalive ? "keep-alive" : "close",
-        clen);
-
-    if (Modes.debug & MODES_DEBUG_NET)
-        printf("HTTP Reply header:\n%s", hdr);
-
-    /* Send header and content. */
-    if (write(c->fd, hdr, hdrlen) != hdrlen ||
-        write(c->fd, content, clen) != clen)
-    {
-        free(content);
-        return 1;
-    }
-    free(content);
-    Modes.stat_http_requests++;
-    return !keepalive;
-}
-
-/* This function polls the clients using read() in order to receive new
- * messages from the net.
- *
- * The message is supposed to be separated by the next message by the
- * separator 'sep', that is a null-terminated C string.
- *
- * Every full message received is decoded and passed to the higher layers
- * calling the function 'handler'.
- *
- * The handelr returns 0 on success, or 1 to signal this function we
- * should close the connection with the client in case of non-recoverable
- * errors. */
-void modesReadFromClient(struct client *c, char *sep,
-                         int(*handler)(struct client *))
-{
-    while(1) {
-        int left = MODES_CLIENT_BUF_SIZE - c->buflen;
-        int nread = read(c->fd, c->buf+c->buflen, left);
-        int fullmsg = 0;
-        int i;
-        char *p;
-
-        if (nread <= 0) {
-            if (nread == 0 || errno != EAGAIN) {
-                /* Error, or end of file. */
-                modesFreeClient(c->fd);
-            }
-            break; /* Serve next client. */
-        }
-        c->buflen += nread;
-
-        /* Always null-term so we are free to use strstr() */
-        c->buf[c->buflen] = '\0';
-
-        /* If there is a complete message there must be the separator 'sep'
-         * in the buffer, note that we full-scan the buffer at every read
-         * for simplicity. */
-        while ((p = strstr(c->buf, sep)) != NULL) {
-            i = p - c->buf; /* Turn it as an index inside the buffer. */
-            c->buf[i] = '\0'; /* Te handler expects null terminated strings. */
-            /* Call the function to process the message. It returns 1
-             * on error to signal we should close the client connection. */
-            if (handler(c)) {
-                modesFreeClient(c->fd);
-                return;
-            }
-            /* Move what's left at the start of the buffer. */
-            i += strlen(sep); /* The separator is part of the previous msg. */
-            memmove(c->buf,c->buf+i,c->buflen-i);
-            c->buflen -= i;
-            c->buf[c->buflen] = '\0';
-            /* Maybe there are more messages inside the buffer.
-             * Start looping from the start again. */
-            fullmsg = 1;
-        }
-        /* If our buffer is full discard it, this is some badly
-         * formatted shit. */
-        if (c->buflen == MODES_CLIENT_BUF_SIZE) {
-            c->buflen = 0;
-            /* If there is garbage, read more to discard it ASAP. */
-            continue;
-        }
-        /* If no message was decoded process the next client, otherwise
-         * read more data from the same client. */
-        if (!fullmsg) break;
-    }
-}
-
-/* Read data from clients. This function actually delegates a lower-level
- * function that depends on the kind of service (raw, http, ...). */
-void modesReadFromClients(void) {
-    int j;
-    struct client *c;
-
-    for (j = 0; j <= Modes.maxfd; j++) {
-        if ((c = Modes.clients[j]) == NULL) continue;
-        if (c->service == Modes.ris)
-            modesReadFromClient(c,"\n",decodeHexMessage);
-        else if (c->service == Modes.https)
-            modesReadFromClient(c,"\r\n\r\n",handleHTTPRequest);
-    }
-}
-
-/* This function is used when "net only" mode is enabled to know when there
- * is at least a new client to serve. Note that the dump1090 networking model
- * is extremely trivial and a function takes care of handling all the clients
- * that have something to serve, without a proper event library, so the
- * function here returns as long as there is a single client ready, or
- * when the specified timeout in milliesconds elapsed, without specifying to
- * the caller what client requires to be served. */
-void modesWaitReadableClients(int timeout_ms) {
-    struct timeval tv;
-    fd_set fds;
-    int j, maxfd = Modes.maxfd;
-
-    FD_ZERO(&fds);
-
-    /* Set client FDs */
-    for (j = 0; j <= Modes.maxfd; j++) {
-        if (Modes.clients[j]) FD_SET(j,&fds);
-    }
-
-    /* Set listening sockets to accept new clients ASAP. */
-    for (j = 0; j < MODES_NET_SERVICES_NUM; j++) {
-        int s = *modesNetServices[j].socket;
-        FD_SET(s,&fds);
-        if (s > maxfd) maxfd = s;
-    }
-
-    tv.tv_sec = timeout_ms/1000;
-    tv.tv_usec = (timeout_ms%1000)*1000;
-    /* We don't care why select returned here, timeout, error, or
-     * FDs ready are all conditions for which we just return. */
-    select(maxfd+1,&fds,NULL,NULL,&tv);
-}
-
-/* ============================ Terminal handling  ========================== */
-
-/* Handle resizing terminal. */
-void sigWinchCallback() {
-    signal(SIGWINCH, SIG_IGN);
-    Modes.interactive_rows = getTermRows();
-    interactiveShowData();
-    signal(SIGWINCH, sigWinchCallback);
-}
-
-/* Get the number of rows after the terminal changes size. */
-int getTermRows() {
-    struct winsize w;
-    ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
-    return w.ws_row;
-}
-
 /* ================================ Main ==================================== */
 
 void showHelp(void) {
@@ -2534,21 +1836,7 @@ void showHelp(void) {
  * perform tasks we need to do continuously, like accepting new clients
  * from the net, refreshing the screen in interactive mode, and so forth. */
 void backgroundTasks(void) {
-    if (Modes.net) {
-        modesAcceptClients();
-        modesReadFromClients();
-        interactiveRemoveStaleAircrafts();
-    }
-
-    /* Refresh screen when in interactive mode. */
-    if (Modes.interactive &&
-        (mstime() - Modes.interactive_last_update) >
-        MODES_INTERACTIVE_REFRESH_TIME)
-    {
-        interactiveRemoveStaleAircrafts();
-        interactiveShowData();
-        Modes.interactive_last_update = mstime();
-    }
+    // BACKGROUND
 }
 
 int main(int argc, char **argv) {
@@ -2569,41 +1857,18 @@ int main(int argc, char **argv) {
             Modes.enable_agc++;
         } else if (!strcmp(argv[j],"--freq") && more) {
             Modes.freq = strtoll(argv[++j],NULL,10);
-        } else if (!strcmp(argv[j],"--ifile") && more) {
-            Modes.filename = strdup(argv[++j]);
-        } else if (!strcmp(argv[j],"--loop")) {
-            Modes.loop = 1;
         } else if (!strcmp(argv[j],"--no-fix")) {
             Modes.fix_errors = 0;
         } else if (!strcmp(argv[j],"--no-crc-check")) {
             Modes.check_crc = 0;
         } else if (!strcmp(argv[j],"--raw")) {
             Modes.raw = 1;
-        } else if (!strcmp(argv[j],"--net")) {
-            Modes.net = 1;
-        } else if (!strcmp(argv[j],"--net-only")) {
-            Modes.net = 1;
-            Modes.net_only = 1;
-        } else if (!strcmp(argv[j],"--net-ro-port") && more) {
-            modesNetServices[MODES_NET_SERVICE_RAWO].port = atoi(argv[++j]);
-        } else if (!strcmp(argv[j],"--net-ri-port") && more) {
-            modesNetServices[MODES_NET_SERVICE_RAWI].port = atoi(argv[++j]);
-        } else if (!strcmp(argv[j],"--net-http-port") && more) {
-            modesNetServices[MODES_NET_SERVICE_HTTP].port = atoi(argv[++j]);
-        } else if (!strcmp(argv[j],"--net-sbs-port") && more) {
-            modesNetServices[MODES_NET_SERVICE_SBS].port = atoi(argv[++j]);
         } else if (!strcmp(argv[j],"--onlyaddr")) {
             Modes.onlyaddr = 1;
         } else if (!strcmp(argv[j],"--metric")) {
             Modes.metric = 1;
         } else if (!strcmp(argv[j],"--aggressive")) {
             Modes.aggressive++;
-        } else if (!strcmp(argv[j],"--interactive")) {
-            Modes.interactive = 1;
-        } else if (!strcmp(argv[j],"--interactive-rows")) {
-            Modes.interactive_rows = atoi(argv[++j]);
-        } else if (!strcmp(argv[j],"--interactive-ttl")) {
-            Modes.interactive_ttl = atoi(argv[++j]);
         } else if (!strcmp(argv[j],"--debug") && more) {
             char *f = argv[++j];
             while(*f) {
@@ -2641,31 +1906,9 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* Setup for SIGWINCH for handling lines */
-    if (Modes.interactive == 1) signal(SIGWINCH, sigWinchCallback);
-
     /* Initialization */
     modesInit();
-    if (Modes.net_only) {
-        fprintf(stderr,"Net-only mode, no RTL device or file open.\n");
-    } else if (Modes.filename == NULL) {
-        modesInitRTLSDR();
-    } else {
-        if (Modes.filename[0] == '-' && Modes.filename[1] == '\0') {
-            Modes.fd = STDIN_FILENO;
-        } else if ((Modes.fd = open(Modes.filename,O_RDONLY)) == -1) {
-            perror("Opening data file");
-            exit(1);
-        }
-    }
-    if (Modes.net) modesInitNet();
-
-    /* If the user specifies --net-only, just run in order to serve network
-     * clients without reading data from the RTL device. */
-    while (Modes.net_only) {
-        backgroundTasks();
-        modesWaitReadableClients(100);
-    }
+    modesInitRTLSDR();
 
     /* Create the thread that will read the data from the device. */
     pthread_create(&Modes.reader_thread, NULL, readerThreadEntryPoint, NULL);
@@ -2692,22 +1935,6 @@ int main(int argc, char **argv) {
         backgroundTasks();
         pthread_mutex_lock(&Modes.data_mutex);
         if (Modes.exit) break;
-    }
-
-    /* If --ifile and --stats were given, print statistics. */
-    if (Modes.stats && Modes.filename) {
-        printf("%lld valid preambles\n", Modes.stat_valid_preamble);
-        printf("%lld demodulated again after phase correction\n",
-            Modes.stat_out_of_phase);
-        printf("%lld demodulated with zero errors\n",
-            Modes.stat_demodulated);
-        printf("%lld with good crc\n", Modes.stat_goodcrc);
-        printf("%lld with bad crc\n", Modes.stat_badcrc);
-        printf("%lld errors corrected\n", Modes.stat_fixed);
-        printf("%lld single bit errors\n", Modes.stat_single_bit_fix);
-        printf("%lld two bits errors\n", Modes.stat_two_bits_fix);
-        printf("%lld total usable messages\n",
-            Modes.stat_goodcrc + Modes.stat_fixed);
     }
 
     rtlsdr_close(Modes.dev);
