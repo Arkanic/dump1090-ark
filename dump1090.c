@@ -67,6 +67,8 @@
 #include <sys/select.h>
 #include <sys/stat.h>
 
+#include "rtl-sdr.h"
+
 #define MODES_DEFAULT_RATE         2000000
 #define MODES_DEFAULT_FREQ         1090000000
 #define MODES_DEFAULT_WIDTH        1000
@@ -146,6 +148,7 @@ struct {
     int gain;
     int enable_agc;
     int freq;
+    rtlsdr_dev_t *dev;
 
     unsigned int fix_errors : 1;    /* Single bit error correction if true. */
     unsigned int check_crc : 1;     /* Only display messages with good CRC. */

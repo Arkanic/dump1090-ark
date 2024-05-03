@@ -2,7 +2,7 @@ CFLAGS?=-O2 -g -Wall -W $(shell pkg-config --cflags librtlsdr)
 LDLIBS+=-lrtlsdr -lpthread -lm
 CC?=gcc
 PROGNAME=dump1090
-FILES=dump1090.o anet.o
+FILES=dump1090.o
 
 all: dump1090
 
